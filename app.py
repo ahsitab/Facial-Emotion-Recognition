@@ -145,16 +145,27 @@ st.markdown("<h1 style='text-align:center;'>😊 Premium Face Emotion AI</h1>", 
 t1, t2 = st.tabs(["📹 Live Camera", "📤 Upload Image"])
 
 with t1:
+    # Detect if we are on Localhost or Cloud
+    is_local = os.path.exists("E:\\SITAB") # Simple check for your local path
+    
     col_cam, col_res = st.columns([1.5, 1])
     with col_cam:
-        st.markdown("### 📹 Live Feed")
-        run = st.toggle("▶️ Start Camera", value=True)
-        frame_holder = st.empty()
+        if is_local:
+            st.markdown("### 📹 Live Feed (Localhost Mode)")
+            run = st.toggle("▶️ Start Camera", value=True)
+            frame_holder = st.empty()
+        else:
+            st.markdown("### 📸 Camera Snapshot (Cloud Mode)")
+            st.info("💡 Live Video is restricted in the Cloud. Please use this stable Snapshot mode.")
+            img_file = st.camera_input("Take a photo for analysis")
+            run = False # Disable the OpenCV loop on cloud
+            
     with col_res:
         st.markdown("### 📊 Real-Time Stats")
         result_holder = st.empty()
 
-    if run:
+    # --- LOCALHOST LIVE LOOP ---
+    if is_local and run:
         cap = cv2.VideoCapture(0)
         while run:
             ret, frame = cap.read()
@@ -175,7 +186,6 @@ with t1:
             frame_holder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), use_container_width=True)
             
             if top_res:
-                # Use join or non-indented f-strings to prevent markdown code block issues
                 html = (
                     f"<div class='emotion-card'>"
                     f"<div class='big-emoji'>{EMOJI_MAP[top_res['emotion']]}</div>"
@@ -184,20 +194,40 @@ with t1:
                     f"</div>"
                 )
                 for i, cls in enumerate(CLASSES):
-                    p = top_res['probs'][i]
-                    c = COLOR_MAP[cls]
-                    hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
-                    html += (
-                        f"<div class='prob-container'>"
-                        f"<div class='prob-label'><span>{EMOJI_MAP[cls]} {cls}</span><span>{p:.1%}</span></div>"
-                        f"<div class='prob-bar-bg'><div class='prob-bar-fill' style='width:{p*100}%; background:{hex_c};'></div></div>"
-                        f"</div>"
-                    )
+                    p = top_res['probs'][i]; c = COLOR_MAP[cls]; hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
+                    html += f"<div class='prob-container'><div class='prob-label'><span>{EMOJI_MAP[cls]} {cls}</span><span>{p:.1%}</span></div><div class='prob-bar-bg'><div class='prob-bar-fill' style='width:{p*100}%; background:{hex_c};'></div></div></div>"
                 result_holder.markdown(html, unsafe_allow_html=True)
             else:
                 result_holder.markdown("<div class='emotion-card'>🔍 No Face Detected</div>", unsafe_allow_html=True)
             time.sleep(0.01)
         cap.release()
+
+    # --- CLOUD SNAPSHOT LOGIC ---
+    if not is_local and img_file:
+        img = np.array(Image.open(img_file).convert("RGB"))
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        faces = face_detector.detectMultiScale(gray, face_scale, min_neighbors)
+        if len(faces) > 0:
+            results = []
+            for (x, y, w, h) in faces:
+                crop = img[max(0,y-20):y+h+20, max(0,x-20):x+w+20]
+                emotion, conf, probs = predict(emotion_model, preprocess_face(cv2.cvtColor(crop, cv2.COLOR_RGB2BGR), model_name))
+                results.append({'emotion': emotion, 'conf': conf, 'probs': probs})
+            
+            top_res = max(results, key=lambda x: x['conf'])
+            html = (
+                f"<div class='emotion-card'>"
+                f"<div class='big-emoji'>{EMOJI_MAP[top_res['emotion']]}</div>"
+                f"<div class='emotion-label'>{top_res['emotion']}</div>"
+                f"<div class='confidence'>{top_res['conf']:.1%} confidence</div>"
+                f"</div>"
+            )
+            for i, cls in enumerate(CLASSES):
+                p = top_res['probs'][i]; c = COLOR_MAP[cls]; hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
+                html += f"<div class='prob-container'><div class='prob-label'><span>{EMOJI_MAP[cls]} {cls}</span><span>{p:.1%}</span></div><div class='prob-bar-bg'><div class='prob-bar-fill' style='width:{p*100}%; background:{hex_c};'></div></div></div>"
+            result_holder.markdown(html, unsafe_allow_html=True)
+        else:
+            result_holder.markdown("<div class='emotion-card'>🔍 No Face Detected</div>", unsafe_allow_html=True)
 
 with t2:
     f = st.file_uploader("Upload a photo", type=["jpg", "png"])
