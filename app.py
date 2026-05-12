@@ -1,6 +1,7 @@
 """
-😊 Facial Emotion Recognition — Live Camera App
+😊 Facial Emotion Recognition — Live Camera App (WebRTC Fixed)
 Uses RAF-DB trained models: SimpleCNN, DeepCNN, ResNet50, EfficientNetB3, ViT-Small
+Supports both Local and Cloud (Streamlit Community Cloud)
 """
 import streamlit as st
 import cv2
@@ -13,6 +14,8 @@ from PIL import Image
 import timm
 import os
 import time
+import threading
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode, RTCConfiguration
 
 # ─── Page Config ───
 st.set_page_config(page_title="😊 Face Emotion AI", page_icon="😊", layout="wide")
@@ -30,7 +33,12 @@ COLOR_MAP = {"Surprise": (255, 215, 0), "Fear": (148, 0, 211), "Disgust": (0, 12
 MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# ─── Model Definitions ───
+# RTC Config for STUN/TURN (Essential for Cloud)
+RTC_CONFIG = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
+
+# ─── Model Definitions (Same as before) ───
 class SimpleCNN(nn.Module):
     def __init__(self, num_classes=7):
         super().__init__()
@@ -183,20 +191,13 @@ h1, h2, h3 { color: #e0e0ff !important; }
 .emotion-label { font-size: 24px; font-weight: 800; color: #fff; }
 .confidence { font-size: 18px; color: #a0a0ff; }
 .prob-bar { height: 8px; border-radius: 4px; margin: 2px 0; }
-.status-badge {
-    display: inline-block; padding: 4px 14px; border-radius: 20px;
-    font-size: 13px; font-weight: 600; color: #fff;
-}
-.status-on { background: #00c853; }
-.status-off { background: #ff1744; }
 </style>
 """, unsafe_allow_html=True)
 
 # ─── Sidebar ───
 with st.sidebar:
     st.markdown("## 🎛️ Control Panel")
-    available = {k: v for k, v in MODEL_FILES.items()
-                 if os.path.exists(os.path.join(MODEL_DIR, v))}
+    available = {k: v for k, v in MODEL_FILES.items() if os.path.exists(os.path.join(MODEL_DIR, v))}
     if not available:
         st.error("No model files found!")
         st.stop()
@@ -206,129 +207,84 @@ with st.sidebar:
     min_neighbors = st.slider("👥 Min Neighbors", 1, 10, 5)
     st.markdown("---")
     st.markdown(f"**Device:** `{DEVICE}`")
-    st.markdown(f"**Models found:** {len(available)}")
-    for k in available:
-        st.markdown(f"- ✅ {k}")
 
-# ─── Header ───
-st.markdown("<h1 style='text-align:center;'>😊 Real-Time Face Emotion Recognition</h1>", unsafe_allow_html=True)
-st.markdown(f"<p style='text-align:center;color:#aaa;'>Model: <b>{model_name}</b> | Device: <b>{DEVICE}</b></p>", unsafe_allow_html=True)
-
-# ─── Load Model ───
-with st.spinner(f"Loading {model_name}..."):
-    model = load_model(model_name)
-if model is None:
-    st.error(f"Could not load {model_name}!")
-    st.stop()
+# ─── Load Model & Detector ───
+model = load_model(model_name)
 face_cascade = load_face_detector()
 
-# ─── Main Layout (Tabs) ───
+# ─── Shared State for WebRTC ───
+class State:
+    def __init__(self):
+        self.results = None
+        self.lock = threading.Lock()
+
+state = State()
+
+class EmotionProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.face_cascade = face_cascade
+        self.model = model
+        self.model_name = model_name
+
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=face_scale,
+                                                   minNeighbors=min_neighbors,
+                                                   minSize=(48, 48))
+        
+        current_results = []
+        for (x, y, w, h) in faces:
+            pad = int(0.1 * w)
+            x1 = max(0, x - pad); y1 = max(0, y - pad)
+            x2 = min(img.shape[1], x + w + pad)
+            y2 = min(img.shape[0], y + h + pad)
+            face_crop = img[y1:y2, x1:x2]
+            
+            if face_crop.size > 0:
+                tensor = preprocess_face(face_crop, self.model_name)
+                emotion, conf, probs = predict(self.model, tensor)
+                current_results.append({"emotion": emotion, "conf": conf, "probs": probs})
+                
+                color = COLOR_MAP.get(emotion, (255, 255, 255))
+                cv2.rectangle(img, (x, y), (x+w, y+h), color, 2)
+                cv2.putText(img, f"{emotion} {conf:.0%}", (x, y-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        
+        with state.lock:
+            state.results = current_results
+            
+        import av
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+# ─── Main Layout ───
+st.markdown("<h1 style='text-align:center;'>😊 Real-Time Face Emotion Recognition</h1>", unsafe_allow_html=True)
+
 tab_live, tab_upload = st.tabs(["📹 Live Detection", "📤 Image Upload"])
 
 with tab_live:
     col_cam, col_info = st.columns([3, 2])
     with col_cam:
         st.markdown("### 📹 Camera Feed")
-        run = st.toggle("▶️ Start Camera", value=False)
-        frame_holder = st.empty()
+        webrtc_ctx = webrtc_streamer(
+            key="emotion-recognition",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTC_CONFIG,
+            video_processor_factory=EmotionProcessor,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
+    
     with col_info:
         st.markdown("### 📊 Detection Results")
         result_holder = st.empty()
-
-with tab_upload:
-    st.markdown("### 📤 Upload an Image for Analysis")
-    uploaded_file = st.file_uploader("Choose a photo (JPG, PNG)...", type=["jpg", "jpeg", "png"])
-    if uploaded_file is not None:
-        up_image = Image.open(uploaded_file).convert("RGB")
-        up_frame = np.array(up_image)
-        up_frame = cv2.cvtColor(up_frame, cv2.COLOR_RGB2BGR)
-        
-        # Face detection on uploaded image
-        gray = cv2.cvtColor(up_frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=face_scale, minNeighbors=min_neighbors, minSize=(48, 48))
-        
-        up_results = []
-        for (x, y, w, h) in faces:
-            pad = int(0.1 * w)
-            x1 = max(0, x - pad); y1 = max(0, y - pad)
-            x2 = min(up_frame.shape[1], x + w + pad)
-            y2 = min(up_frame.shape[0], y + h + pad)
-            face_crop = up_frame[y1:y2, x1:x2]
-            if face_crop.size == 0: continue
-            
-            tensor = preprocess_face(face_crop, model_name)
-            emotion, conf, probs = predict(model, tensor)
-            up_results.append({"emotion": emotion, "conf": conf, "probs": probs, "box": (x, y, w, h)})
-            
-            color = COLOR_MAP.get(emotion, (255, 255, 255))
-            cv2.rectangle(up_frame, (x, y), (x+w, y+h), color, 4)
-            cv2.putText(up_frame, f"{emotion} {conf:.0%}", (x, y-15), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3)
-
-        col_up_img, col_up_res = st.columns([3, 2])
-        with col_up_img:
-            st.image(cv2.cvtColor(up_frame, cv2.COLOR_BGR2RGB), use_container_width=True)
-        with col_up_res:
-            if up_results:
-                st.markdown("#### 📊 Analysis Results")
-                for r in up_results:
-                    emoji = EMOJI_MAP[r['emotion']]
-                    st.markdown(f"**{emoji} {r['emotion']}** ({r['conf']:.1%})")
-                    p = r["conf"]
-                    c = COLOR_MAP[r["emotion"]]
-                    hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
-                    st.markdown(f"<div style='background:rgba(255,255,255,0.1);height:10px;border-radius:5px;margin-bottom:15px;'><div style='width:{p*100}%;background:{hex_c};height:10px;border-radius:5px;'></div></div>", unsafe_allow_html=True)
-            else:
-                st.warning("No faces detected in the uploaded image. Try adjusting the detection scale in the sidebar.")
-
-# ─── Camera Loop (Active in tab_live) ───
-if run:
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        st.error("❌ Cannot open camera! Check permissions.")
-        st.stop()
-
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
-    try:
-        while run:
-            ret, frame = cap.read()
-            if not ret:
-                st.warning("Camera read failed.")
-                break
-
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=face_scale,
-                                                   minNeighbors=min_neighbors,
-                                                   minSize=(48, 48))
-            results = []
-            for (x, y, w, h) in faces:
-                pad = int(0.1 * w)
-                x1 = max(0, x - pad); y1 = max(0, y - pad)
-                x2 = min(frame.shape[1], x + w + pad)
-                y2 = min(frame.shape[0], y + h + pad)
-                face_crop = frame[y1:y2, x1:x2]
-                if face_crop.size == 0:
-                    continue
-                tensor = preprocess_face(face_crop, model_name)
-                emotion, conf, probs = predict(model, tensor)
-                results.append({"emotion": emotion, "conf": conf, "probs": probs,
-                                "box": (x, y, w, h)})
-                color = COLOR_MAP.get(emotion, (255, 255, 255))
-                cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
-                label = f"{EMOJI_MAP[emotion]} {emotion} {conf:.0%}"
-                cv2.putText(frame, label, (x, y-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-
-            display = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame_holder.image(display, channels="RGB", use_container_width=True)
-
-            # Update results panel
-            if results:
-                top = max(results, key=lambda r: r["conf"])
+        # Main loop to update UI from shared state
+        while webrtc_ctx.state.playing:
+            with state.lock:
+                res = state.results
+            if res:
+                top = max(res, key=lambda r: r["conf"])
                 emoji = EMOJI_MAP[top["emotion"]]
-                # Use string joining or no-indent f-strings to prevent markdown code block issues
                 html = (
                     f"<div class='emotion-card'>"
                     f"<div class='big-emoji'>{emoji}</div>"
@@ -351,20 +307,37 @@ if run:
                     )
                 result_holder.write(html, unsafe_allow_html=True)
             else:
-                result_holder.markdown(
-                    "<div class='emotion-card'><div class='big-emoji'>🔍</div>"
-                    "<div class='emotion-label'>No Face Detected</div></div>",
-                    unsafe_allow_html=True)
-            time.sleep(0.03)
-    finally:
-        cap.release()
-else:
-    frame_holder.markdown(
-        "<div class='emotion-card' style='height:300px;display:flex;align-items:center;justify-content:center;'>"
-        "<div><div class='big-emoji'>📹</div><div class='emotion-label'>Camera Off</div>"
-        "<p style='color:#888;'>Toggle the switch above to start</p></div></div>",
-        unsafe_allow_html=True)
-    result_holder.markdown(
-        "<div class='emotion-card'><div class='big-emoji'>⏳</div>"
-        "<div class='emotion-label'>Waiting...</div></div>",
-        unsafe_allow_html=True)
+                result_holder.markdown("<div class='emotion-card'>🔍 No Face Detected</div>", unsafe_allow_html=True)
+            time.sleep(0.1)
+
+with tab_upload:
+    st.markdown("### 📤 Upload an Image for Analysis")
+    uploaded_file = st.file_uploader("Choose a photo...", type=["jpg", "jpeg", "png"])
+    if uploaded_file is not None:
+        up_image = Image.open(uploaded_file).convert("RGB")
+        up_frame = np.array(up_image)
+        up_frame = cv2.cvtColor(up_frame, cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(up_frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=face_scale, minNeighbors=min_neighbors, minSize=(48, 48))
+        up_results = []
+        for (x, y, w, h) in faces:
+            pad = int(0.1 * w)
+            x1, y1 = max(0, x-pad), max(0, y-pad)
+            x2, y2 = min(up_frame.shape[1], x+w+pad), min(up_frame.shape[0], y+h+pad)
+            face_crop = up_frame[y1:y2, x1:x2]
+            if face_crop.size == 0: continue
+            tensor = preprocess_face(face_crop, model_name)
+            emotion, conf, probs = predict(model, tensor)
+            up_results.append({"emotion": emotion, "conf": conf, "probs": probs})
+            color = COLOR_MAP.get(emotion, (255, 255, 255))
+            cv2.rectangle(up_frame, (x, y), (x+w, y+h), color, 4)
+            cv2.putText(up_frame, f"{emotion} {conf:.0%}", (x, y-15), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3)
+        col_up_img, col_up_res = st.columns([3, 2])
+        with col_up_img: st.image(cv2.cvtColor(up_frame, cv2.COLOR_BGR2RGB), use_container_width=True)
+        with col_up_res:
+            if up_results:
+                for r in up_results:
+                    st.markdown(f"**{EMOJI_MAP[r['emotion']]} {r['emotion']}** ({r['conf']:.1%})")
+                    p = r["conf"]; c = COLOR_MAP[r["emotion"]]; hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
+                    st.markdown(f"<div style='background:rgba(255,255,255,0.1);height:10px;border-radius:5px;margin-bottom:15px;'><div style='width:{p*100}%;background:{hex_c};height:10px;border-radius:5px;'></div></div>", unsafe_allow_html=True)
+            else: st.warning("No faces detected.")
