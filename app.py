@@ -165,24 +165,25 @@ with t1:
             frame_holder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), use_container_width=True)
             
             if top_res:
-                html = f"""
-                <div class='emotion-card'>
-                    <div class='big-emoji'>{EMOJI_MAP[top_res['emotion']]}</div>
-                    <div class='emotion-label'>{top_res['emotion']}</div>
-                    <div class='confidence'>{top_res['conf']:.1%} confidence</div>
-                </div>
-                """
+                # Use join or non-indented f-strings to prevent markdown code block issues
+                html = (
+                    f"<div class='emotion-card'>"
+                    f"<div class='big-emoji'>{EMOJI_MAP[top_res['emotion']]}</div>"
+                    f"<div class='emotion-label'>{top_res['emotion']}</div>"
+                    f"<div class='confidence'>{top_res['conf']:.1%} confidence</div>"
+                    f"</div>"
+                )
                 for i, cls in enumerate(CLASSES):
                     p = top_res['probs'][i]
                     c = COLOR_MAP[cls]
                     hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
-                    html += f"""
-                    <div class='prob-container'>
-                        <div class='prob-label'><span>{EMOJI_MAP[cls]} {cls}</span><span>{p:.1%}</span></div>
-                        <div class='prob-bar-bg'><div class='prob-bar-fill' style='width:{p*100}%; background:{hex_c};'></div></div>
-                    </div>
-                    """
-                result_holder.write(html, unsafe_allow_html=True)
+                    html += (
+                        f"<div class='prob-container'>"
+                        f"<div class='prob-label'><span>{EMOJI_MAP[cls]} {cls}</span><span>{p:.1%}</span></div>"
+                        f"<div class='prob-bar-bg'><div class='prob-bar-fill' style='width:{p*100}%; background:{hex_c};'></div></div>"
+                        f"</div>"
+                    )
+                result_holder.markdown(html, unsafe_allow_html=True)
             else:
                 result_holder.markdown("<div class='emotion-card'>🔍 No Face Detected</div>", unsafe_allow_html=True)
             time.sleep(0.01)
@@ -205,5 +206,5 @@ with t2:
                 for i, cls in enumerate(CLASSES):
                     p = probs[i]; c = COLOR_MAP[cls]; hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
                     html += f"<div class='prob-container'><div class='prob-label'><span>{EMOJI_MAP[cls]} {cls}</span><span>{p:.1%}</span></div><div class='prob-bar-bg'><div class='prob-bar-fill' style='width:{p*100}%; background:{hex_c};'></div></div></div>"
-                st.write(html, unsafe_allow_html=True)
+                st.markdown(html, unsafe_allow_html=True)
             else: st.warning("No face detected.")
