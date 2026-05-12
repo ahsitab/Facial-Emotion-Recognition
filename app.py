@@ -126,6 +126,15 @@ with st.sidebar:
     model_name = st.selectbox("🧠 Model", list(MODEL_FILES.keys()))
     face_scale = st.slider("🔍 Face Scale", 1.05, 1.5, 1.3)
     min_neighbors = st.slider("👥 Min Neighbors", 1, 10, 5)
+    
+    st.markdown("---")
+    st.markdown("### 💡 Quick Tips")
+    st.markdown("""
+    - **Lighting**: Ensure your face is well-lit for the best accuracy.
+    - **One at a Time**: The AI analyzes the primary face detected in the frame.
+    - **Model Selection**: Switch models to compare speed vs. accuracy.
+    - **Detection Fix**: If no face is found, try adjusting the 'Face Scale' slider.
+    """)
 
 face_detector = load_face_detector()
 emotion_model = load_model(model_name)
