@@ -222,20 +222,66 @@ if model is None:
     st.stop()
 face_cascade = load_face_detector()
 
-# ─── Main Layout ───
-col_cam, col_info = st.columns([3, 2])
+# ─── Main Layout (Tabs) ───
+tab_live, tab_upload = st.tabs(["📹 Live Detection", "📤 Image Upload"])
 
-with col_cam:
-    st.markdown("### 📹 Camera Feed")
-    run = st.toggle("▶️ Start Camera", value=False)
-    frame_holder = st.empty()
+with tab_live:
+    col_cam, col_info = st.columns([3, 2])
+    with col_cam:
+        st.markdown("### 📹 Camera Feed")
+        run = st.toggle("▶️ Start Camera", value=False)
+        frame_holder = st.empty()
+    with col_info:
+        st.markdown("### 📊 Detection Results")
+        result_holder = st.empty()
 
-with col_info:
-    st.markdown("### 📊 Detection Results")
-    result_holder = st.empty()
-    chart_holder = st.empty()
+with tab_upload:
+    st.markdown("### 📤 Upload an Image for Analysis")
+    uploaded_file = st.file_uploader("Choose a photo (JPG, PNG)...", type=["jpg", "jpeg", "png"])
+    if uploaded_file is not None:
+        up_image = Image.open(uploaded_file).convert("RGB")
+        up_frame = np.array(up_image)
+        up_frame = cv2.cvtColor(up_frame, cv2.COLOR_RGB2BGR)
+        
+        # Face detection on uploaded image
+        gray = cv2.cvtColor(up_frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=face_scale, minNeighbors=min_neighbors, minSize=(48, 48))
+        
+        up_results = []
+        for (x, y, w, h) in faces:
+            pad = int(0.1 * w)
+            x1 = max(0, x - pad); y1 = max(0, y - pad)
+            x2 = min(up_frame.shape[1], x + w + pad)
+            y2 = min(up_frame.shape[0], y + h + pad)
+            face_crop = up_frame[y1:y2, x1:x2]
+            if face_crop.size == 0: continue
+            
+            tensor = preprocess_face(face_crop, model_name)
+            emotion, conf, probs = predict(model, tensor)
+            up_results.append({"emotion": emotion, "conf": conf, "probs": probs, "box": (x, y, w, h)})
+            
+            color = COLOR_MAP.get(emotion, (255, 255, 255))
+            cv2.rectangle(up_frame, (x, y), (x+w, y+h), color, 4)
+            cv2.putText(up_frame, f"{emotion} {conf:.0%}", (x, y-15), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3)
 
-# ─── Camera Loop ───
+        col_up_img, col_up_res = st.columns([3, 2])
+        with col_up_img:
+            st.image(cv2.cvtColor(up_frame, cv2.COLOR_BGR2RGB), use_container_width=True)
+        with col_up_res:
+            if up_results:
+                st.markdown("#### 📊 Analysis Results")
+                for r in up_results:
+                    emoji = EMOJI_MAP[r['emotion']]
+                    st.markdown(f"**{emoji} {r['emotion']}** ({r['conf']:.1%})")
+                    p = r["conf"]
+                    c = COLOR_MAP[r["emotion"]]
+                    hex_c = f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
+                    st.markdown(f"<div style='background:rgba(255,255,255,0.1);height:10px;border-radius:5px;margin-bottom:15px;'><div style='width:{p*100}%;background:{hex_c};height:10px;border-radius:5px;'></div></div>", unsafe_allow_html=True)
+            else:
+                st.warning("No faces detected in the uploaded image. Try adjusting the detection scale in the sidebar.")
+
+# ─── Camera Loop (Active in tab_live) ───
 if run:
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
