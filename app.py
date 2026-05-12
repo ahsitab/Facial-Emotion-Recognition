@@ -123,7 +123,8 @@ h1, h2, h3 { color: #e0e0ff !important; }
 # ─── Sidebar ───
 with st.sidebar:
     st.title("🎛️ AI Settings")
-    model_name = st.selectbox("🧠 Model", list(MODEL_FILES.keys()))
+    st.success("🏆 **Recommended**: Use **ResNet50** for the best detection accuracy.")
+    model_name = st.selectbox("🧠 Model", list(MODEL_FILES.keys()), index=2) # Default to ResNet50
     face_scale = st.slider("🔍 Face Scale", 1.05, 1.5, 1.3)
     min_neighbors = st.slider("👥 Min Neighbors", 1, 10, 5)
     
