@@ -1,9 +1,10 @@
-streamlit
+streamlit>=1.30.0
 torch
 torchvision
 timm
 opencv-python-headless
 numpy
 Pillow
-streamlit-webrtc
+streamlit-webrtc>=0.47.0
 av
+tornado>=6.2
